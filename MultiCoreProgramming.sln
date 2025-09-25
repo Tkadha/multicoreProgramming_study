@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35825.156 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MultiCoreProgramming", "MultiCoreProgramming.vcxproj", "{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Debug|x64.ActiveCfg = Debug|x64
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Debug|x64.Build.0 = Debug|x64
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Debug|x86.ActiveCfg = Debug|Win32
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Debug|x86.Build.0 = Debug|Win32
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Release|x64.ActiveCfg = Release|x64
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Release|x64.Build.0 = Release|x64
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Release|x86.ActiveCfg = Release|Win32
+		{42C88DC3-65EE-4B72-B3BC-45F7EFF079FD}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {33CE9F75-8AE8-4ABE-BCDB-CBE56EA92E9E}
+	EndGlobalSection
+EndGlobal
