@@ -11,14 +11,14 @@ volatile int sum = 0;
 
 void no_lock_thread(const int thread_count)
 {
-	for (auto i = 0; i < 5'000'000 / thread_count; ++i) sum = sum + 2;
+	for (auto i = 0; i < 50'000'000 / thread_count; ++i) sum = sum + 2;
 }
 
 std::mutex mu;
 
 void mutex_thread(const int thread_count)
 {
-	for (auto i = 0; i < 5'000'000 / thread_count; ++i)
+	for (auto i = 0; i < 50'000'000 / thread_count; ++i)
 	{
 		mu.lock();
 		sum = sum + 2;
@@ -53,7 +53,7 @@ void volatile_bakery_unlock(const int thread_num)
 
 void volatile_bakery_thread(const int thread_count, const int thread_num)
 {
-	for (auto i = 0; i < 5'000'000 / thread_count; ++i)
+	for (auto i = 0; i < 50'000'000 / thread_count; ++i)
 	{
 		volatile_bakery_lock(thread_count, thread_num);
 		sum = sum + 2;
@@ -93,7 +93,7 @@ void atomic_bakery_unlock(const int thread_num)
 
 void atomic_bakery_thread(const int thread_count, const int thread_num)
 {
-	for (auto i = 0; i < 5'000'000 / thread_count; ++i)
+	for (auto i = 0; i < 50'000'000 / thread_count; ++i)
 	{
 		atomic_bakery_lock(thread_count, thread_num);
 		a_sum += 2;
@@ -101,6 +101,34 @@ void atomic_bakery_thread(const int thread_count, const int thread_num)
 	}
 }
 
+
+std::atomic <bool> lock_flag(false);
+bool CAS(std::atomic_bool* lock_flag, bool old_value, bool new_value) {
+	return std::atomic_compare_exchange_strong(
+		lock_flag, &old_value, new_value);
+}
+
+
+void CAS_LOCK()
+{
+	while (!CAS(&lock_flag, false, true)) {}
+}
+
+void CAS_UNLOCK()
+{
+	lock_flag = false;
+}
+
+void CAS_worker_thread(int threads_num)
+{
+	const int loop_count = 50'000'000 / threads_num;
+	for (int i = 0;i < loop_count;++i) {
+		CAS_LOCK();
+		sum = sum + 2;
+		CAS_UNLOCK();
+	}
+
+}
 
 int main()
 {
@@ -114,8 +142,8 @@ int main()
 		for (auto& th : threads) th.join();
 		auto end_t = high_resolution_clock::now();
 		std::cout << "no lock " << i << " thread - result_sum: " << sum << ", time: " << duration_cast<milliseconds>(end_t - start_t).count() << " ms" << std::endl;
-	}*/
-	/*for (int i = 1; i <= 8; i *= 2) {
+	}
+	for (int i = 1; i <= 8; i *= 2) {
 		std::vector<std::thread> threads;
 		sum = 0;
 		auto start_t = high_resolution_clock::now();
@@ -125,9 +153,9 @@ int main()
 		for (auto& th : threads) th.join();
 		auto end_t = high_resolution_clock::now();
 		std::cout << "mutex " << i << " thread - result_sum: " << sum << ", time: " << duration_cast<milliseconds>(end_t - start_t).count() << " ms" << std::endl;
-	}*/
+	}
 
-	/*for (int i = 1; i <= 8; i *= 2) {
+	for (int i = 1; i <= 8; i *= 2) {
 		std::vector<std::thread> threads;
 		sum = 0;
 		auto start_t = high_resolution_clock::now();
@@ -141,9 +169,9 @@ int main()
 			v_flag[k] = false;
 			v_label[k] = 0;
 		}
-	}*/
+	}
 
-	/*for (int i = 1; i <= 8; i *= 2) {
+	for (int i = 1; i <= 8; i *= 2) {
 		std::vector<std::thread> threads;
 		a_sum = 0;
 		auto start_t = high_resolution_clock::now();
@@ -158,5 +186,19 @@ int main()
 			a_label[k] = 0;
 		}
 	}*/
+
+	for (int i = 1; i <= 8; i *= 2) {
+		std::vector<std::thread> threads;
+		sum = 0;
+		lock_flag = false;
+		auto start_t = high_resolution_clock::now();
+		for (int j = 0; j < i; ++j) {
+			threads.emplace_back(CAS_worker_thread, i);
+		}
+		for (auto& th : threads) th.join();
+		auto end_t = high_resolution_clock::now();
+		std::cout << "CAS " << i << " thread - result_sum: " << sum << ", time: " << duration_cast<milliseconds>(end_t - start_t).count() << " ms" << std::endl;
+	}
+
 
 }
