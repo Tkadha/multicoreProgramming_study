@@ -221,9 +221,132 @@ public:
 	}
 };
 
+class O_SET {
+private:
+	NODE* head, * tail;
+public:
+	O_SET() {
+		head = new NODE(std::numeric_limits<int>::min());
+		tail = new NODE(std::numeric_limits<int>::max());
+		head->next = tail;
+	}
+	~O_SET() {
+		clear();
+		delete head;
+		delete tail;
+	}
+	void clear() {
+		NODE* curr = head->next;
+		while (curr != tail) {
+			NODE* temp = curr;
+			curr = curr->next;
+			delete temp;
+		}
+		head->next = tail;
+	}
+
+	bool validate(int x, NODE* p, NODE* c) {
+		NODE* prev = head;
+		NODE* curr = prev->next;
+		while (curr->value < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		return ((prev == p) && (curr == c));
+	}
+
+	bool add(int x) {
+		while (true) {
+			NODE* prev = head;
+			NODE* curr = prev->next;
+
+			while (curr->value < x) {
+				prev = curr;
+				curr = curr->next;
+			}
+			prev->lock(); curr->lock();
+			if (false == validate(x, prev, curr)) {
+				prev->unlock(); curr->unlock();
+				continue;
+			}
+			if (curr->value == x) {
+				prev->unlock(); curr->unlock();
+				return false;
+			}
+			else {
+				NODE* newnode = new NODE(x);
+				newnode->next = curr;
+				prev->next = newnode;
+				prev->unlock(); curr->unlock();
+				return true;
+			}
+		}
+
+	}
+	bool remove(int x) {
+		while (true) {
+			NODE* prev = head;
+			NODE* curr = prev->next;
+
+			while (curr->value < x) {
+				prev = curr;
+				curr = curr->next;
+			}
+
+			prev->lock(); curr->lock();
+			if (false == validate(x, prev, curr)) {
+				prev->unlock(); curr->unlock();
+				continue;
+			}
+			if (curr->value == x) {
+
+				NODE* temp = curr;
+				prev->next = curr->next;
+				prev->unlock(); curr->unlock();
+				//delete temp;
+				return true;
+			}
+			else {
+				prev->unlock(); curr->unlock();
+				return false;
+			}
+		}
+	}
+	bool contains(int x) {
+		while (true) {
+			NODE* prev = head;
+			NODE* curr = prev->next;
+			while (curr->value < x) {
+				prev = curr;
+				curr = curr->next;
+			}
+			prev->lock(); curr->lock();
+			if (false == validate(x, prev, curr)) {
+				prev->unlock(); curr->unlock();
+				continue;
+			}
+			if (curr->value == x) {
+				prev->unlock(); curr->unlock();
+				return true;
+			}
+			else {
+				prev->unlock(); curr->unlock();
+				return false;
+			}
+		}
+	}
+	void print20() {
+		auto curr = head->next;
+		for (int i = 0;i < 20 && curr != tail;++i) {
+			std::cout << curr->value << ", ";
+			curr = curr->next;
+		}
+		std::cout << std::endl;
+	}
+};
 
 
-F_SET set;
+O_SET set;
 void benchmark(const int num_thread)
 {
 	const int loop_count = 4'000'000 / num_thread;
@@ -239,7 +362,7 @@ void benchmark(const int num_thread)
 
 int main()
 {
-	for (int i = MAX_THREADS; i >= 1; i /= 2) {
+	for (int i = 1; i <= MAX_THREADS; i *= 2) {
 		set.clear();
 		std::vector<std::thread> threads;
 		auto start_t = high_resolution_clock::now();
