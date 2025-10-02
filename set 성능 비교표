@@ -1,5 +1,5 @@
 단위: ms
-학교 컴퓨터 기준
+학교 컴퓨터 기준 (AMD Ryzen 5 5600G with Radeon Graphics)
 set 성능 비교표 (싱글 스레드: 950) 
 
 성긴 동기화 coarse-grained synchronization
