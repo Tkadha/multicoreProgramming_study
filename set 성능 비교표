@@ -33,6 +33,13 @@ set 성능 비교표 (싱글 스레드: 950)
 8 스레드 - 356
 16 스레드 - 321
 
+shared_ptr 게으른 동기화 shared_ptr lazy snchronization
+1 스레드 - 11123
+2 스레드 - 13432
+4 스레드 - 17609
+8 스레드 - 24136
+16 스레드 - 28531
+
 비멈춤 동기화 nonblocking synchronization
 1 스레드 - 
 2 스레드 - 
