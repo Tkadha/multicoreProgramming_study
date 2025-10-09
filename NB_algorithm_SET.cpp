@@ -574,6 +574,7 @@ public:
 	}
 };
 
+/*
 class NODE_SP {
 public:
 	int value;
@@ -684,9 +685,122 @@ public:
 		std::cout << std::endl;
 	}
 };
+*/
+
+class NODE_ASP {
+public:
+	int value;
+	std::atomic<std::shared_ptr<NODE_ASP>> next;
+	std::mutex mu;
+	volatile bool removed;
+	NODE_ASP() :next(nullptr), removed(false) {}
+	NODE_ASP(int x) :next(nullptr), value(x), removed(false) {}
+	void lock() { mu.lock(); }
+	void unlock() { mu.unlock(); }
+};
+
+#include <atomic>
+class L_SET_ASP {
+private:
+	std::shared_ptr<NODE_ASP> head, tail;
+public:
+	L_SET_ASP() {
+		head = std::make_shared <NODE_ASP>(std::numeric_limits<int>::min());
+		tail = std::make_shared <NODE_ASP>(std::numeric_limits<int>::max());
+		head->next = tail;
+	}
+	~L_SET_ASP() {
+		clear();
+	}
+	void clear() {
+		head->next = tail;
+	}
+
+	bool validate(const std::shared_ptr<NODE_ASP>& p, const std::shared_ptr<NODE_ASP>& c) {
+		return (!p->removed && !c->removed && p->next.load() == c);
+	}
+
+	bool add(int x) {
+		while (true) {
+			std::shared_ptr<NODE_ASP> prev = head;
+			std::shared_ptr<NODE_ASP> curr = prev->next;
+
+			while (curr->value < x) {
+				prev = curr;
+				curr = curr->next;
+			}
+			prev->lock(); curr->lock();
+			if (false == validate(prev, curr)) {
+				prev->unlock(); curr->unlock();
+				continue;
+			}
+			if (curr->value == x) {
+				prev->unlock(); curr->unlock();
+				return false;
+			}
+			else {
+				std::shared_ptr<NODE_ASP> newnode = std::make_shared <NODE_ASP>(x);
+				newnode->next = curr;
+				prev->next = newnode;
+				prev->unlock(); curr->unlock();
+				return true;
+			}
+		}
+
+	}
+	bool remove(int x) {
+		while (true) {
+			std::shared_ptr<NODE_ASP> prev = head;
+			std::shared_ptr<NODE_ASP> curr = prev->next;
+
+			while (curr->value < x) {
+				prev = curr;
+				curr = curr->next;
+			}
+
+			prev->lock(); curr->lock();
+			if (false == validate(prev, curr)) {
+				prev->unlock(); curr->unlock();
+				continue;
+			}
+			if (curr->value == x) {
+
+				curr->removed = true;
+				prev->next = curr->next.load();
+				prev->unlock(); curr->unlock();
+				//delete temp;
+				return true;
+			}
+			else {
+				prev->unlock(); curr->unlock();
+				return false;
+			}
+		}
+	}
+	bool contains(int x) {
+		while (true) {
+			std::shared_ptr<NODE_ASP> prev = head;
+			while (prev->value < x) {
+				prev = prev->next;
+			}
+			return prev->value == x && !prev->removed;
+		}
+	}
+	void print20() {
+		std::shared_ptr<NODE_ASP> curr = head->next;
+		for (int i = 0;i < 20 && curr != tail;++i) {
+			if (!curr->removed) {
+				std::cout << curr->value << ", ";
+			}
+			else --i;
+			curr = curr->next;
+		}
+		std::cout << std::endl;
+	}
+};
 
 
-L_SET_SP set;
+L_SET_ASP set;
 
 
 
