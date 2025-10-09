@@ -40,6 +40,13 @@ shared_ptr 게으른 동기화 shared_ptr lazy snchronization
 8 스레드 - 24136
 16 스레드 - 28531
 
+c++20 atomic shared_ptr 게으른 동기화 atomic shared_ptr lazy snchronization
+1 스레드 - 10932
+2 스레드 - 9535
+4 스레드 - 6391
+8 스레드 - 3652
+16 스레드 - 3125
+
 비멈춤 동기화 nonblocking synchronization
 1 스레드 - 
 2 스레드 - 
