@@ -117,7 +117,7 @@ public:
 			std::cout << curr->value << ", ";
 			curr = curr->next;
 		}
-		std::cout <<std::endl;
+		std::cout << std::endl;
 	}
 };
 
@@ -602,18 +602,18 @@ public:
 		head->next = tail;
 	}
 
-	bool validate(const std::shared_ptr<NODE_SP> &p, const std::shared_ptr<NODE_SP> &c) {
-		return (!p->removed && !c->removed && p->next == c);
+	bool validate(const std::shared_ptr<NODE_SP>& p, const std::shared_ptr<NODE_SP>& c) {
+		return (!p->removed && !c->removed && std::atomic_load(&p->next) == c);
 	}
 
 	bool add(int x) {
 		while (true) {
 			std::shared_ptr<NODE_SP> prev = head;
-			std::shared_ptr<NODE_SP> curr = prev->next;
+			std::shared_ptr<NODE_SP> curr = std::atomic_load(&prev->next);
 
 			while (curr->value < x) {
 				prev = curr;
-				curr = curr->next;
+				curr = std::atomic_load(&curr->next);
 			}
 			prev->lock(); curr->lock();
 			if (false == validate(prev, curr)) {
@@ -627,7 +627,7 @@ public:
 			else {
 				std::shared_ptr<NODE_SP> newnode = std::make_shared <NODE_SP>(x);
 				newnode->next = curr;
-				prev->next = newnode;
+				std::atomic_exchange(&prev->next, newnode);
 				prev->unlock(); curr->unlock();
 				return true;
 			}
@@ -637,11 +637,11 @@ public:
 	bool remove(int x) {
 		while (true) {
 			std::shared_ptr<NODE_SP> prev = head;
-			std::shared_ptr<NODE_SP> curr = prev->next;
+			std::shared_ptr<NODE_SP> curr = std::atomic_load(&prev->next);
 
 			while (curr->value < x) {
 				prev = curr;
-				curr = curr->next;
+				curr = std::atomic_load(&curr->next);
 			}
 
 			prev->lock(); curr->lock();
@@ -652,7 +652,7 @@ public:
 			if (curr->value == x) {
 
 				curr->removed = true;
-				prev->next = curr->next;
+				std::atomic_exchange(&prev->next, std::atomic_load(&curr->next));
 				prev->unlock(); curr->unlock();
 				//delete temp;
 				return true;
@@ -667,7 +667,7 @@ public:
 		while (true) {
 			std::shared_ptr<NODE_SP> prev = head;
 			while (prev->value < x) {
-				prev = prev->next;
+				prev = std::atomic_load(&prev->next);
 			}
 			return prev->value == x && !prev->removed;
 		}
