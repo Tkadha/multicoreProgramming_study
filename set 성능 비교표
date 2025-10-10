@@ -47,9 +47,9 @@ c++20 atomic shared_ptr 게으른 동기화 atomic shared_ptr lazy snchronizatio
 8 스레드 - 3652
 16 스레드 - 3125
 
-비멈춤 동기화 nonblocking synchronization
-1 스레드 - 
-2 스레드 - 
-4 스레드 - 
-8 스레드 - 
-16 스레드 - 
+비멈춤 동기화 nonblocking synchronization (Lock-free)
+1 스레드 - 1366
+2 스레드 - 760
+4 스레드 - 439
+8 스레드 - 280
+16 스레드 - 218
