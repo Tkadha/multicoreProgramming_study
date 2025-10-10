@@ -687,6 +687,7 @@ public:
 };
 */
 
+#include <atomic>
 class NODE_ASP {
 public:
 	int value;
@@ -699,7 +700,6 @@ public:
 	void unlock() { mu.unlock(); }
 };
 
-#include <atomic>
 class L_SET_ASP {
 private:
 	std::shared_ptr<NODE_ASP> head, tail;
@@ -800,7 +800,158 @@ public:
 };
 
 
-L_SET_ASP set;
+class LF_NODE;
+
+class AMR { // atomic markable reference
+	volatile long long ptr_and_mark;
+public:
+	AMR(LF_NODE* ptr = nullptr, bool mark = false) {
+		long long val = reinterpret_cast<long long> (ptr);
+		if (true == mark) val |= 1;
+
+		ptr_and_mark = val;
+	}
+	~AMR() {}
+
+
+	LF_NODE* get_ptr() {
+		long long val = ptr_and_mark;
+		return reinterpret_cast<LF_NODE*>(val & 0xFFFF'FFFF'FFFF'FFFE);
+	}
+	bool get_mark() {
+		return (1 == (ptr_and_mark & 1));
+	}
+
+	LF_NODE* get_ptr_and_mark(bool* mark) {
+		long long val = ptr_and_mark;
+		*mark = (1 == (val & 1));
+		return reinterpret_cast<LF_NODE*>(val & 0xFFFF'FFFF'FFFF'FFFE);
+	}
+
+	bool attempt_mark(LF_NODE* expected_ptr, bool new_mark) {
+		return CAS(expected_ptr, expected_ptr, false, new_mark);
+	}
+
+	bool CAS(LF_NODE* expected_ptr, LF_NODE* new_ptr,
+		bool expectedMark, bool newMark) {
+
+		long long oldval = reinterpret_cast<long long>(expected_ptr);
+		if (expectedMark) oldval |= 1;
+
+		long long newval = reinterpret_cast<long long>(new_ptr);
+		if (newMark) newval |= 1;
+
+		return std::atomic_compare_exchange_strong(
+			reinterpret_cast<volatile std::atomic<long long>*>(&ptr_and_mark),
+			&oldval, newval);
+	}
+};
+
+class LF_NODE {
+public:
+	int value;
+	AMR next;
+	LF_NODE(int x) :value(x) {}
+};
+
+class LF_SET {
+private:
+	LF_NODE* head, * tail;
+public:
+	LF_SET() {
+		head = new LF_NODE(std::numeric_limits<int>::min());
+		tail = new LF_NODE(std::numeric_limits<int>::max());
+		head->next = tail;
+	}
+	~LF_SET() {
+		clear();
+		delete head;
+		delete tail;
+	}
+	void clear() {
+		LF_NODE* curr = head->next.get_ptr();
+		while (curr != tail) {
+			LF_NODE* temp = curr;
+			curr = curr->next.get_ptr();
+			delete temp;
+		}
+		head->next = tail;
+	}
+
+	void find(LF_NODE*& prev, LF_NODE*& curr, int x)
+	{
+		while (true)
+		{
+			retry:
+			prev = head;
+			curr = prev->next.get_ptr();
+			while (true) {
+				bool curr_mark;
+				auto succ = curr->next.get_ptr_and_mark(&curr_mark);
+				while (true == curr_mark) {
+					if (false == prev->next.CAS(curr, succ, false, false)) goto retry;
+					curr = succ;
+					succ = curr->next.get_ptr_and_mark(&curr_mark);
+				}
+				if (curr->value >= x) return;
+				prev = curr;
+				curr = succ;
+			}
+		}
+	}
+
+	bool add(int x) {
+		while (true) {
+			LF_NODE* prev, *curr;
+			find(prev, curr, x);
+
+			if (curr->value == x) {
+				return false;
+			}
+			else {
+				auto newnode = new LF_NODE(x);
+				newnode->next = curr;
+				if (true == prev->next.CAS(curr, newnode, false, false)) return true;
+			}
+		}
+
+	}
+	bool remove(int x) {
+		while (true) {
+			LF_NODE* prev, * curr;
+			find(prev, curr, x);
+			
+			if (curr->value == x) {
+				auto succ = curr->next.get_ptr();
+				if (false == curr->next.attempt_mark(succ, true)) continue;
+				prev->next.CAS(curr, succ, false, false);
+				return true;
+			}
+			else {
+				return false;
+			}
+		}
+	}
+	bool contains(int x) {
+		LF_NODE* curr = head;
+		while (curr->value < x) {
+			curr = curr->next.get_ptr();
+		}
+		return (curr->next.get_mark() == false) && (curr->value == x);
+	}
+	void print20() {
+		auto p = head->next.get_ptr();
+
+		for (int i = 0; i < 20; ++i) {
+			if (tail == p) break;
+			std::cout << p->value << ", ";
+			p = p->next.get_ptr();
+		}
+		std::cout << std::endl;
+	}
+};
+
+LF_SET set;
 
 
 
@@ -902,23 +1053,8 @@ void benchmark(const int num_threads)
 int main()
 {
 	using namespace std::chrono;
-	for (int num_thread = MAX_THREADS; num_thread >= 1; num_thread /= 2) {
-		set.clear();
-		std::vector<std::thread> threads;
-		auto start = high_resolution_clock::now();
-		for (int i = 0; i < num_thread; ++i)
-			threads.emplace_back(benchmark, num_thread);
-		for (auto& th : threads)
-			th.join();
-		auto stop = high_resolution_clock::now();
-		auto duration = duration_cast<milliseconds>(stop - start);
-		std::cout << "Threads: " << num_thread
-			<< ", Duration: " << duration.count() << " ms.\n";
-		std::cout << "Set: "; set.print20();
-	}
-
 	// Consistency check
-	std::cout << "\n\nConsistency Check\n";
+	std::cout << "Consistency Check\n";
 
 	for (int num_thread = MAX_THREADS; num_thread >= 1; num_thread /= 2) {
 		set.clear();
@@ -936,5 +1072,21 @@ int main()
 			<< ", Duration: " << duration.count() << " ms.\n";
 		std::cout << "Set: "; set.print20();
 		check_history(num_thread);
+	}
+	std::cout << "\n\nBenchMarking Check\n";
+
+	for (int num_thread = MAX_THREADS; num_thread >= 1; num_thread /= 2) {
+		set.clear();
+		std::vector<std::thread> threads;
+		auto start = high_resolution_clock::now();
+		for (int i = 0; i < num_thread; ++i)
+			threads.emplace_back(benchmark, num_thread);
+		for (auto& th : threads)
+			th.join();
+		auto stop = high_resolution_clock::now();
+		auto duration = duration_cast<milliseconds>(stop - start);
+		std::cout << "Threads: " << num_thread
+			<< ", Duration: " << duration.count() << " ms.\n";
+		std::cout << "Set: "; set.print20();
 	}
 }
