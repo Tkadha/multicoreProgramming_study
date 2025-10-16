@@ -851,6 +851,7 @@ class LF_NODE {
 public:
 	int value;
 	AMR next;
+	int epoch;
 	LF_NODE(int x) :value(x) {}
 };
 
@@ -951,7 +952,184 @@ public:
 	}
 };
 
-LF_SET set;
+std::atomic_int g_ebr_counter{};
+
+int num_thread{};
+thread_local int thread_id{};
+
+class EBR {
+private:
+	std::queue<LF_NODE*> free_list[MAX_THREADS];
+	std::atomic_int epoch_counter;
+	struct THREAD_COUNTER {
+		alignas(64) std::atomic_int local_epoch;
+	};
+	THREAD_COUNTER thread_counter[MAX_THREADS];
+public:
+
+	EBR() = default;
+	~EBR() {
+		recycle();
+	}
+	void recycle() {
+		for (int i = 0;i < MAX_THREADS;++i) {
+			while (false == free_list[i].empty()) {
+				auto node = free_list[i].front();
+				free_list[i].pop();
+				delete node;
+			}
+			thread_counter[i].local_epoch = 0;
+			epoch_counter = 0;
+		}
+
+	}
+	void delete_node(LF_NODE* node) {
+		node->epoch = epoch_counter;
+		free_list[thread_id].push(node);
+	}
+	LF_NODE* new_node(int x) {
+		if (false == free_list[thread_id].empty()) {
+			auto node = free_list[thread_id].front();
+			bool can_reuse = true;
+			for (int i = 0;i < num_thread;++i) {
+				if (i == thread_id) continue;
+				if (thread_counter[i].local_epoch <= node->epoch) {
+					can_reuse = false;
+					break;
+				}
+			}
+			if (true == can_reuse) {
+				free_list[thread_id].pop();
+				node->value = x;
+				node->next = nullptr;
+				return node;
+			}
+		}
+		return new LF_NODE(x);
+	}
+	void increase_ebr_counter() {
+		thread_counter[thread_id].local_epoch.store(++epoch_counter);
+	}
+	void max_th_ebr_counter() {
+		thread_counter[thread_id].local_epoch.store(std::numeric_limits<int>::max());
+	}
+};
+
+class LF_SET_EBR {
+private:
+	EBR ebr;
+	LF_NODE* head, * tail;
+public:
+	LF_SET_EBR() {
+		head = new LF_NODE(std::numeric_limits<int>::min());
+		tail = new LF_NODE(std::numeric_limits<int>::max());
+		head->next = tail;
+	}
+	~LF_SET_EBR() {
+		clear();
+		delete head;
+		delete tail;
+	}
+	void clear() {
+		LF_NODE* curr = head->next.get_ptr();
+		while (curr != tail) {
+			LF_NODE* temp = curr;
+			curr = curr->next.get_ptr();
+			delete temp;
+		}
+		head->next = tail;
+		ebr.recycle();
+	}
+
+	void find(LF_NODE*& prev, LF_NODE*& curr, int x)
+	{
+		while (true)
+		{
+		retry:
+			prev = head;
+			curr = prev->next.get_ptr();
+			while (true) {
+				bool curr_mark;
+				auto succ = curr->next.get_ptr_and_mark(&curr_mark);
+				while (true == curr_mark) {
+					if (false == prev->next.CAS(curr, succ, false, false)) goto retry;
+					ebr.delete_node(curr);
+					curr = succ;
+					succ = curr->next.get_ptr_and_mark(&curr_mark);
+				}
+				if (curr->value >= x) return;
+				prev = curr;
+				curr = succ;
+			}
+		}
+	}
+
+	bool add(int x) {
+		ebr.increase_ebr_counter();
+		while (true) {
+			LF_NODE* prev, * curr;
+			find(prev, curr, x);
+
+			if (curr->value == x) {
+				ebr.max_th_ebr_counter();
+				return false;
+			}
+			else {
+				auto newnode = ebr.new_node(x);
+				newnode->next = curr;
+				if (true == prev->next.CAS(curr, newnode, false, false)) {
+					ebr.max_th_ebr_counter();
+					return true;
+				}
+				else ebr.delete_node(newnode);
+			}
+		}
+
+	}
+	bool remove(int x) {
+		ebr.increase_ebr_counter();
+		while (true) {
+			LF_NODE* prev, * curr;
+			find(prev, curr, x);
+
+			if (curr->value == x) {
+				auto succ = curr->next.get_ptr();
+				if (false == curr->next.attempt_mark(succ, true)) continue;
+				if (true == prev->next.CAS(curr, succ, false, false)) {
+					ebr.delete_node(curr);
+				}
+				ebr.max_th_ebr_counter();
+				return true;
+			}
+			else {
+				ebr.max_th_ebr_counter();
+				return false;
+			}
+		}
+	}
+	bool contains(int x) {
+		ebr.increase_ebr_counter();
+		LF_NODE* curr = head->next.get_ptr();
+		while (curr->value < x) {
+			curr = curr->next.get_ptr();
+		}
+		ebr.max_th_ebr_counter();
+		return (curr->next.get_mark() == false) && (curr->value == x);
+	}
+	void print20() {
+		auto p = head->next.get_ptr();
+
+		for (int i = 0; i < 20; ++i) {
+			if (tail == p) break;
+			std::cout << p->value << ", ";
+			p = p->next.get_ptr();
+		}
+		std::cout << std::endl;
+	}
+};
+
+
+LF_SET_EBR set;
 
 
 
@@ -1016,6 +1194,7 @@ void check_history(int num_threads)
 
 void benchmark_check(int num_threads, int th_id)
 {
+	thread_id = th_id;
 	for (int i = 0; i < LOOP / num_threads; ++i) {
 		int op = rand() % 3;
 		switch (op) {
@@ -1039,8 +1218,9 @@ void benchmark_check(int num_threads, int th_id)
 }
 
 
-void benchmark(const int num_threads)
+void benchmark(const int num_threads, int th_id)
 {
+	thread_id = th_id;
 	for (int i = 0; i < LOOP / num_threads; ++i) {
 		int value = rand() % RANGE;
 		int op = rand() % 3;
@@ -1056,7 +1236,7 @@ int main()
 	// Consistency check
 	std::cout << "Consistency Check\n";
 
-	for (int num_thread = MAX_THREADS; num_thread >= 1; num_thread /= 2) {
+	for (num_thread = 1; num_thread <= MAX_THREADS; num_thread *= 2) {
 		set.clear();
 		std::vector<std::thread> threads;
 		for (int i = 0; i < MAX_THREADS; ++i)
@@ -1075,12 +1255,12 @@ int main()
 	}
 	std::cout << "\n\nBenchMarking Check\n";
 
-	for (int num_thread = MAX_THREADS; num_thread >= 1; num_thread /= 2) {
+	for (num_thread = 1; num_thread <= MAX_THREADS; num_thread *= 2) {
 		set.clear();
 		std::vector<std::thread> threads;
 		auto start = high_resolution_clock::now();
 		for (int i = 0; i < num_thread; ++i)
-			threads.emplace_back(benchmark, num_thread);
+			threads.emplace_back(benchmark, num_thread, i);
 		for (auto& th : threads)
 			th.join();
 		auto stop = high_resolution_clock::now();
