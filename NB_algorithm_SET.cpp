@@ -4,6 +4,7 @@
 #include <chrono>
 #include <vector>
 #include <numeric>
+#include <set>
 
 using namespace std::chrono;
 const int MAX_THREADS = 16;
@@ -1128,10 +1129,83 @@ public:
 	}
 };
 
+enum INVO_OP { ADD = 0, REMOVE, CONTAINS };
+class INVOCATION {
+public:
+	INVO_OP op;
+	int value;
+	INVOCATION(INVO_OP o, int v) : op(o), value(v) {}
+};
 
-LF_SET_EBR set;
+typedef bool RESPONSE;
+
+// single thread api
+class SEQ_SET {
+	std::set<int> m_set;
+public:
+	RESPONSE apply(INVOCATION inv) {
+		switch (inv.op) {
+		case ADD:
+			return m_set.insert(inv.value).second;
+		case REMOVE:
+			return (m_set.erase(inv.value) > 0);
+		case CONTAINS:
+			return (m_set.find(inv.value) != m_set.end());
+		default:
+			return false;
+		}
+	}
+	void clear() { m_set.clear(); }
+	void print20() {
+		int cnt{};
+		for (auto& n : m_set) {
+			std::cout << n << ", ";
+			if (++cnt >= 20) break;
+		}
+		std::cout << '\n';
+	}
+};
+
+// benchmarking ¿ë
+class STD_SET {
+private:
+	SEQ_SET m_set;
+	std::mutex mu;
+public:
+	STD_SET() = default;
+	~STD_SET() = default;
+	void clear() {
+		m_set.clear();
+	}
+
+	bool add(int x) {
+		mu.lock();
+		auto res = m_set.apply({ ADD, x });
+		mu.unlock();
+		return res;
+
+	}
+	bool remove(int x) {
+		mu.lock();
+		auto res = m_set.apply({ REMOVE, x });
+		mu.unlock();
+		return res;
+	}
+	bool contains(int x) {
+		mu.lock();
+		auto res = m_set.apply({ CONTAINS, x });
+		mu.unlock();
+		return res;
+	}
+	void print20() {
+		m_set.print20();
+	}
+};
 
 
+
+
+STD_SET set;
 
 
 const int LOOP = 400'0000;
