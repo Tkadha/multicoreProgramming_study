@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="time_test.cpp">
+    <ClCompile Include="NB_algorithm_QUEUE.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>

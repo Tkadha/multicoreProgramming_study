@@ -1166,10 +1166,209 @@ public:
 	}
 };
 
+
+class LNODE;
+
+class CONSENSUS {
+	LNODE* value{ nullptr };
+public:
+	LNODE* decide(LNODE* v)
+	{
+		CAS(&value, nullptr, v);
+		return value;
+	}
+	void CAS(LNODE** addr, LNODE* expected, LNODE* update)
+	{
+		std::atomic_compare_exchange_strong(
+			reinterpret_cast<std::atomic<LNODE*>*>(addr),
+			&expected, update);
+	}
+	void clear()
+	{
+		value = nullptr;
+	}
+};
+
+class LNODE {
+public:
+	INVOCATION m_inv;
+	int	m_seq;
+	LNODE* m_next;
+	CONSENSUS decide_next;
+	LNODE(INVOCATION inv) : m_inv(inv), m_seq(0), m_next(nullptr) {}
+};
+
+class LFU_SET {
+	LNODE* head[MAX_THREADS];
+	LNODE* tail;
+public:
+	LFU_SET() {
+		tail = new LNODE(INVOCATION(CONTAINS, 0)); // dummy
+		for (int i = 0; i < MAX_THREADS; ++i) {
+			head[i] = tail;
+		}
+	}
+
+	~LFU_SET()
+	{
+		while (nullptr != tail) {
+			LNODE* temp = tail;
+			tail = tail->m_next;
+			delete temp;
+		}
+	}
+
+	LNODE* max_head()
+	{
+		LNODE* max_node = head[0];
+		for (int i = 1; i < num_thread; ++i) {
+			if (max_node->m_seq < head[i]->m_seq)
+				max_node = head[i];
+		}
+		return max_node;
+	}
+
+	RESPONSE apply(INVOCATION inv)
+	{
+		int i = thread_id;
+		auto prefer = new LNODE(inv);
+		while (prefer->m_seq == 0) {
+			LNODE* before = max_head();
+			LNODE* after = before->decide_next.decide(prefer);
+			before->m_next = after;
+			after->m_seq = before->m_seq + 1;
+			head[i] = after;
+		}
+
+		SEQ_SET seq_set;
+		LNODE* curr = tail->m_next;
+		while (curr != prefer) {
+			seq_set.apply(curr->m_inv);
+			curr = curr->m_next;
+		}
+		return seq_set.apply(inv);
+	};
+
+	void clear()
+	{
+		for (int i = 0; i < num_thread; ++i) {
+			head[i] = tail;
+		}
+		LNODE* curr = tail->m_next;
+		while (nullptr != curr) {
+			LNODE* temp = curr;
+			curr = curr->m_next;
+			delete temp;
+		}
+		tail->m_next = nullptr;
+		tail->decide_next.clear();
+	}
+
+	void print20()
+	{
+		SEQ_SET seq_set;
+		LNODE* curr = tail->m_next;
+		while (nullptr != curr) {
+			seq_set.apply(curr->m_inv);
+			curr = curr->m_next;
+		}
+		seq_set.print20();
+	}
+};
+
+class WFU_SET {
+	LNODE* announce[MAX_THREADS];
+	LNODE* head[MAX_THREADS];
+	LNODE* tail;
+public:
+	WFU_SET() {
+		tail = new LNODE(INVOCATION(CONTAINS, 0)); // dummy
+		tail->m_seq = 1;
+		for (int i = 0; i < MAX_THREADS; ++i) {
+			head[i] = tail;
+			announce[i] = tail;
+		}
+	}
+
+	~WFU_SET()
+	{
+		while (nullptr != tail) {
+			LNODE* temp = tail;
+			tail = tail->m_next;
+			delete temp;
+		}
+	}
+
+	LNODE* max_head()
+	{
+		LNODE* max_node = head[0];
+		for (int i = 1; i < num_thread; ++i) {
+			if (max_node->m_seq < head[i]->m_seq)
+				max_node = head[i];
+		}
+		return max_node;
+	}
+
+	RESPONSE apply(INVOCATION inv)
+	{
+		int i = thread_id;
+		announce[i] = new LNODE(inv);
+		head[i] = max_head();
+		while (announce[i]->m_seq == 0) {
+			LNODE* before = head[i];
+			LNODE* help = announce[((before->m_seq + 1) % num_thread)];
+			LNODE* prefer;
+			if (help->m_seq == 0) prefer = help;
+			else prefer = announce[i];
+			LNODE* after = before->decide_next.decide(prefer);
+			before->m_next = after;
+			after->m_seq = before->m_seq + 1;
+			head[i] = after;
+		}
+
+		SEQ_SET seq_set;
+		LNODE* curr = tail->m_next;
+		while (curr != announce[i]) {
+			seq_set.apply(curr->m_inv);
+			curr = curr->m_next;
+		}
+		head[i] = announce[i];
+		return seq_set.apply(inv);
+	};
+
+	void clear()
+	{
+		for (int i = 0; i < num_thread; ++i) {
+			head[i] = tail;
+			announce[i] = tail;
+		}
+		LNODE* curr = tail->m_next;
+		while (nullptr != curr) {
+			LNODE* temp = curr;
+			curr = curr->m_next;
+			delete temp;
+		}
+		tail->m_seq = 1;
+		tail->m_next = nullptr;
+		tail->decide_next.clear();
+	}
+
+	void print20()
+	{
+		SEQ_SET seq_set;
+		LNODE* curr = tail->m_next;
+		while (nullptr != curr) {
+			seq_set.apply(curr->m_inv);
+			curr = curr->m_next;
+		}
+		seq_set.print20();
+	}
+};
+
 // benchmarking ¿ë
 class STD_SET {
 private:
-	SEQ_SET m_set;
+	WFU_SET m_set;
 	std::mutex mu;
 public:
 	STD_SET() = default;
@@ -1208,7 +1407,7 @@ public:
 STD_SET set;
 
 
-const int LOOP = 400'0000;
+const int LOOP = 1'0000;
 const int RANGE = 1000;
 
 
