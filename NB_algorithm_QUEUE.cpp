@@ -285,6 +285,8 @@ public:
 constexpr int MAX_THREADS = 16;
 constexpr int NUM_TEST = 10'000'000;
 
+
+
 LFSTQUEUE g_queue;
 
 void benchmark(const int num_thread)
