@@ -8,6 +8,7 @@
 #include <immintrin.h>
 
 const int MAX_THREADS = 16;
+int num_threads{};
 
 class NODE {
 public:
@@ -156,7 +157,6 @@ public:
 };
 
 
-int num_threads{};
 class LFBO_STACK {
 	NODE* volatile top;
 public:
@@ -217,42 +217,25 @@ public:
 	}
 };
 
-class BACKOFF {
-	int minDelay, maxDelay;
-	int limit;
-public:
-	BACKOFF(int min, int max)
-		: minDelay(min), maxDelay(max), limit(min) {
-		if (0 == limit) {
-			std::cout << "Error limit == 0\n";
-			exit(-1);
-		}
-	}
-	void InterruptedException() {
-		int delay = rand() % limit;
-		limit += limit;
-		if (limit > maxDelay) limit = maxDelay;
-		for (int i = 0; i < delay; i++) _mm_pause();
-	}
-};
 
 constexpr int ST_EMPTY = 0;
 constexpr int ST_WAITING = 1;
 constexpr int ST_BUSY = 2;
 constexpr int TIME_OUT = 100;
+
 class LockFreeExchanger {
-	std::atomic_llong slot;
+	alignas(64) std::atomic_llong slot;
 public:
-	LockFreeExchanger() { slot = 0; }
+	LockFreeExchanger() : slot(0) { }
 	int exchange(int my_item, bool* busy) {
 		*busy = false;
-		while (true) {
+		for (int j = 0; j < TIME_OUT; ++j) {
 			long long s = slot;
-			int item = (int)(s & 0xFFFFFFFF);
+			int item = (int)(s & 0xFFFF'FFFF);
 			int status = (int)((s >> 32) & 0x3);
 			switch (status) {
 			case ST_EMPTY: {
-				long long new_s = ((long long)my_item & 0xFFFFFFFF) | ((long long)ST_WAITING <<32);
+				long long new_s = ((long long)my_item & 0xFFFF'FFFF) | ((long long)ST_WAITING << 32);
 				if (std::atomic_compare_exchange_strong(&slot, &s, new_s)) {
 					int spins = 0;
 					for (int i = 0;i < TIME_OUT;++i) {
@@ -269,7 +252,7 @@ public:
 					}
 					else { // BUSY
 						s = slot;
-						int their_item = (int(s & 0xFFFFFFFF));
+						int their_item = (int)(s & 0xFFFF'FFFF);
 						slot = 0;
 						return their_item;
 					}
@@ -313,6 +296,8 @@ public:
 	}
 };
 
+int exchange_cnt{};
+
 class LFEL_STACK {
 	NODE* top;
 	EliminationArray el_arr;
@@ -329,24 +314,24 @@ public:
 		while (nullptr != top) pop();
 	}
 
-	bool CAS(NODE* expected, NODE* new_value)
+	bool CAS(NODE* volatile* addr, NODE* expected, NODE* desired)
 	{
 		return std::atomic_compare_exchange_strong(
-			reinterpret_cast<std::atomic<NODE*>*>(&top),
+			reinterpret_cast<volatile std::atomic<NODE*>*>(addr),
 			&expected,
-			new_value);
+			desired);
 	}
 
 	void push(int x)
 	{
-		BACKOFF bo(1, num_threads);
 		NODE* new_node = new NODE(x);
 		while (true) {
-			NODE* before_top = top;
-			new_node->next = before_top;
-			if (true == CAS(before_top, new_node)) return;
+			new_node->next = top;
+			if (CAS(&top, new_node->next, new_node))
+				return;
 			int res = el_arr.Visit(x);
 			if (res == -1) {
+				exchange_cnt += 1;
 				return;
 			}
 		}
@@ -354,19 +339,20 @@ public:
 
 	int pop()
 	{
-		BACKOFF bo(1, num_threads);
 		while (true) {
-			NODE* before_top = top;
-			if (nullptr == before_top) {
+			NODE* curr_top = top;
+			if (nullptr == curr_top) {
 				return -2;
 			}
-			NODE* next = before_top->next;
-			if (before_top != top) continue;
-			int res = before_top->value;
-			if (true == CAS(before_top, next)) return res;
-			int res = el_arr.Visit(-1);
-			if (res >= 0) {
-				return;
+			NODE* next_node = curr_top->next;
+			if (CAS(&top, curr_top, next_node)) {
+				int res = curr_top->value;
+				//delete curr_top;
+				return res;
+			}
+			int result = el_arr.Visit(-1);
+			if (result >= 0) {
+				return result;
 			}
 
 		}
@@ -378,73 +364,6 @@ public:
 		for (int i = 0; i < 20 && curr != nullptr; i++, curr = curr->next)
 			std::cout << curr->value << ", ";
 		std::cout << "\n";
-	}
-};
-
-
-
-
-class LockFreeExchanger {
-	alignas(64) std::atomic_llong slot;
-public:
-	LockFreeExchanger() {
-		slot = 0;
-	}
-	int exchange(int value, bool* busy) {
-		*busy = false;
-		while (true) {
-			long long curr_slot = slot;
-			int value = (int)(curr_slot & 0xFFFFFFFF);
-			int state = (int)((curr_slot >> 32) & 0x3);
-			switch (state) {
-			case ST_EMPTY: {
-				long long new_slot = ((long long)value) | ((long long)ST_WAITING << 32);
-				if (std::atomic_compare_exchange_strong(&slot, &curr_slot, new_slot)) {
-					auto start_t = std::chrono::high_resolution_clock::now();
-					while (true) {
-						curr_slot = slot;
-						state = (int)((curr_slot >> 32) & 0x3);
-						if (state == ST_BUSY) {
-							int ret_value = (int)(curr_slot & 0xFFFFFFFF);
-							slot = 0;
-							return ret_value;
-						}
-						auto curr_t = std::chrono::high_resolution_clock::now();
-						auto dur = curr_t - start_t;
-						size_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(dur).count();
-						if (ms > 10) { // TIME OUT
-							long long empty_slot = 0;
-							if (std::atomic_compare_exchange_strong(&slot, &curr_slot, empty_slot)) {
-								*busy = false;
-								return -2; // TIME OUT
-							}
-							else {
-								curr_slot = slot;
-								int ret_value = (int)(curr_slot & 0xFFFFFFFF);
-								slot = 0;
-								return ret_value;
-							}
-						}
-					}
-				}
-				break;
-			}
-			case ST_WAITING: {
-				long long new_slot = ((long long)value) | ((long long)ST_BUSY << 32);
-				if (std::atomic_compare_exchange_strong(&slot, &curr_slot, new_slot)) {
-					return value;
-				}
-				else
-					*busy = true;
-				break;
-			}
-			case ST_BUSY: {
-				*busy = true;
-				break;
-			}
-			}
-		}
-		return -2;
 	}
 };
 
@@ -561,6 +480,7 @@ int main()
 
 	for (int n = 1; n <= MAX_THREADS; n *= 2) {
 		num_threads = n;
+		exchange_cnt = 0;
 		my_stack.clear();
 		std::vector<std::thread> tv;
 		auto start_t = high_resolution_clock::now();
@@ -574,5 +494,6 @@ int main()
 		size_t ms = duration_cast<milliseconds>(exec_t).count();
 		std::cout << n << " Threads,  " << ms << "ms. ----";
 		my_stack.print20();
+		std::cout << "교환 성공 횟수: " << exchange_cnt << '\n';
 	}
 }
