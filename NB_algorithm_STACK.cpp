@@ -5,6 +5,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_set>
+#include <immintrin.h>
 
 const int MAX_THREADS = 16;
 
@@ -128,11 +129,99 @@ public:
 	}
 };
 
-class BackOff {
+class BACKOFF { 
 	int minDelay, maxDelay;
 	int limit;
 public:
-	BackOff(int min, int max)
+	BACKOFF(int min, int max)
+		: minDelay(min), maxDelay(max), limit(min) {
+		if (0 == limit) {
+			std::cout << "Error limit == 0\n";
+			exit(-1);
+		}
+	}
+	void InterruptedException() { 
+		// 문제점: 너무 김(micro sec은 3000clock)
+		// 정확한 딜레이가 생성되지 않음
+		// - Sleep_for는 OS 호출
+		// - OS 호출은 몇 micro sec의 딜레이가 있음
+		//	- sleep_for는 정밀하지 않음, OS의 스케줄러가 담당
+		//	- sleep_for는 nano sec으로는 호출 안됨
+		int delay = rand() % limit;
+		limit += limit;
+		if (limit > maxDelay) limit = maxDelay;
+		//std::this_thread::sleep_for(std::chrono::microseconds(delay));
+		for (int i = 0; i < delay; i++) _mm_pause();
+	}
+};
+
+
+int num_threads{};
+class LFBO_STACK {
+	NODE* volatile top;
+public:
+	LFBO_STACK() {
+		top = nullptr;
+	}
+
+	~LFBO_STACK() {
+		clear();
+	}
+
+	void clear() {
+		while (nullptr != top) pop();
+	}
+
+	bool CAS(NODE* expected, NODE* new_value)
+	{
+		return std::atomic_compare_exchange_strong(
+			reinterpret_cast<volatile std::atomic<NODE*>*>(&top),
+			&expected,
+			new_value);
+	}
+
+	void push(int x)
+	{
+		BACKOFF bo(1, num_threads);
+		NODE* new_node = new NODE(x);
+		while (true) {
+			NODE* before_top = top;
+			new_node->next = before_top;
+			if (true == CAS(before_top, new_node)) return;
+			bo.InterruptedException();
+		}
+	}
+
+	int pop()
+	{
+		BACKOFF bo(1, num_threads);
+		while (true) {
+			NODE* before_top = top;
+			if (nullptr == before_top) {
+				return -2;
+			}
+			NODE* next = before_top->next;
+			if (before_top != top) continue;
+			int res = before_top->value;
+			if (true == CAS(before_top, next)) return res;
+			bo.InterruptedException();
+		}
+	}
+
+	void print20()
+	{
+		NODE* curr = top;
+		for (int i = 0; i < 20 && curr != nullptr; i++, curr = curr->next)
+			std::cout << curr->value << ", ";
+		std::cout << "\n";
+	}
+};
+
+class BACKOFF {
+	int minDelay, maxDelay;
+	int limit;
+public:
+	BACKOFF(int min, int max)
 		: minDelay(min), maxDelay(max), limit(min) {
 		if (0 == limit) {
 			std::cout << "Error limit == 0\n";
@@ -141,21 +230,98 @@ public:
 	}
 	void InterruptedException() {
 		int delay = rand() % limit;
-		limit *= 2;
+		limit += limit;
 		if (limit > maxDelay) limit = maxDelay;
-		std::this_thread::sleep_for(std::chrono::microseconds(delay));
+		for (int i = 0; i < delay; i++) _mm_pause();
 	}
 };
 
-int num_threads{};
-class LFBO_STACK {
-	NODE* top;
+constexpr int ST_EMPTY = 0;
+constexpr int ST_WAITING = 1;
+constexpr int ST_BUSY = 2;
+constexpr int TIME_OUT = 100;
+class LockFreeExchanger {
+	std::atomic_llong slot;
 public:
-	LFBO_STACK() {
+	LockFreeExchanger() { slot = 0; }
+	int exchange(int my_item, bool* busy) {
+		*busy = false;
+		while (true) {
+			long long s = slot;
+			int item = (int)(s & 0xFFFFFFFF);
+			int status = (int)((s >> 32) & 0x3);
+			switch (status) {
+			case ST_EMPTY: {
+				long long new_s = ((long long)my_item & 0xFFFFFFFF) | ((long long)ST_WAITING <<32);
+				if (std::atomic_compare_exchange_strong(&slot, &s, new_s)) {
+					int spins = 0;
+					for (int i = 0;i < TIME_OUT;++i) {
+						s = slot;
+						status = (int)((s >> 32) & 0x3);
+						if (status == ST_BUSY) {
+							int their_item = (int(s & 0xFFFFFFFF));
+							slot = 0;
+							return their_item;
+						}
+					}
+					if (std::atomic_compare_exchange_strong(&slot, &s, 0)) {
+						return -2;	// TIME OUT
+					}
+					else { // BUSY
+						s = slot;
+						int their_item = (int(s & 0xFFFFFFFF));
+						slot = 0;
+						return their_item;
+					}
+				}
+			}
+			break;
+			case ST_WAITING: {
+				long long new_s = ((long long)my_item & 0xFFFFFFFF) | ((long long)ST_BUSY << 32);
+				if (std::atomic_compare_exchange_strong(&slot,&s,new_s)) {
+					int their_item = item;
+					return their_item;
+				}
+			}
+			break;
+			case ST_BUSY: {
+				*busy = true;
+			}
+			break;
+			}
+		}
+		return -2;
+	}
+};
+
+class EliminationArray {
+	int range;
+	LockFreeExchanger exchanger[MAX_THREADS / 2 - 1];
+public:
+	EliminationArray() { range = 1; }
+	~EliminationArray() {}
+	int Visit(int value) {
+		int slot = rand() % range;
+		bool busy;
+		int ret = exchanger[slot].exchange(value, &busy);
+		int old_range = range;
+		if ((ret == -2) && (old_range > 1))  // TIME OUT
+			range = old_range - 1;
+		if ((true == busy) && (old_range <= num_threads / 2 - 1))
+			range = old_range + 1; // MAX RANGE is # of thread / 2
+		return ret;
+	}
+};
+
+class LFEL_STACK {
+	NODE* top;
+	EliminationArray el_arr;
+public:
+	LFEL_STACK() {
 		top = nullptr;
 	}
 
-	~LFBO_STACK() {
+	~LFEL_STACK() {
 		clear();
 	}
 
@@ -173,29 +339,36 @@ public:
 
 	void push(int x)
 	{
-		BackOff bo(1, num_threads);
+		BACKOFF bo(1, num_threads);
 		NODE* new_node = new NODE(x);
 		while (true) {
 			NODE* before_top = top;
 			new_node->next = before_top;
 			if (true == CAS(before_top, new_node)) return;
-			else bo.InterruptedException();
+			int res = el_arr.Visit(x);
+			if (res == -1) {
+				return;
+			}
 		}
 	}
 
 	int pop()
 	{
-		BackOff bo(1, num_threads);
+		BACKOFF bo(1, num_threads);
 		while (true) {
 			NODE* before_top = top;
 			if (nullptr == before_top) {
 				return -2;
 			}
 			NODE* next = before_top->next;
-			int res = before_top->value;
 			if (before_top != top) continue;
+			int res = before_top->value;
 			if (true == CAS(before_top, next)) return res;
-			else bo.InterruptedException();
+			int res = el_arr.Visit(-1);
+			if (res >= 0) {
+				return;
+			}
+
 		}
 	}
 
@@ -208,7 +381,74 @@ public:
 	}
 };
 
-LFBO_STACK my_stack;
+
+
+
+class LockFreeExchanger {
+	alignas(64) std::atomic_llong slot;
+public:
+	LockFreeExchanger() {
+		slot = 0;
+	}
+	int exchange(int value, bool* busy) {
+		*busy = false;
+		while (true) {
+			long long curr_slot = slot;
+			int value = (int)(curr_slot & 0xFFFFFFFF);
+			int state = (int)((curr_slot >> 32) & 0x3);
+			switch (state) {
+			case ST_EMPTY: {
+				long long new_slot = ((long long)value) | ((long long)ST_WAITING << 32);
+				if (std::atomic_compare_exchange_strong(&slot, &curr_slot, new_slot)) {
+					auto start_t = std::chrono::high_resolution_clock::now();
+					while (true) {
+						curr_slot = slot;
+						state = (int)((curr_slot >> 32) & 0x3);
+						if (state == ST_BUSY) {
+							int ret_value = (int)(curr_slot & 0xFFFFFFFF);
+							slot = 0;
+							return ret_value;
+						}
+						auto curr_t = std::chrono::high_resolution_clock::now();
+						auto dur = curr_t - start_t;
+						size_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(dur).count();
+						if (ms > 10) { // TIME OUT
+							long long empty_slot = 0;
+							if (std::atomic_compare_exchange_strong(&slot, &curr_slot, empty_slot)) {
+								*busy = false;
+								return -2; // TIME OUT
+							}
+							else {
+								curr_slot = slot;
+								int ret_value = (int)(curr_slot & 0xFFFFFFFF);
+								slot = 0;
+								return ret_value;
+							}
+						}
+					}
+				}
+				break;
+			}
+			case ST_WAITING: {
+				long long new_slot = ((long long)value) | ((long long)ST_BUSY << 32);
+				if (std::atomic_compare_exchange_strong(&slot, &curr_slot, new_slot)) {
+					return value;
+				}
+				else
+					*busy = true;
+				break;
+			}
+			case ST_BUSY: {
+				*busy = true;
+				break;
+			}
+			}
+		}
+		return -2;
+	}
+};
+
+LFEL_STACK my_stack;
 
 struct HISTORY {
 	std::vector <int> push_values, pop_values;
